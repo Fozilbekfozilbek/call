@@ -1,0 +1,12 @@
+# Cloudflare Tunnel config — joylashuvi: ~/.cloudflared/config.yml
+#
+# <tunnel-id> va credentials-file yo'lini o'zingizning
+# "cloudflared tunnel create call-tracking" natijasiga qarab to'ldiring.
+
+tunnel: call-tracking
+credentials-file: /root/.cloudflared/<tunnel-id>.json
+
+ingress:
+  - hostname: call.sofmebel.uz
+    service: http://localhost:3000
+  - service: http_status:404
