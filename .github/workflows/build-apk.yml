@@ -69,10 +69,16 @@ jobs:
               '' \
               '// >>> CI: force compileSdk 36 on every plugin module' \
               'subprojects {' \
-              '    afterEvaluate {' \
+              '    val applyCompileSdk36: () -> Unit = {' \
               '        extensions.findByType(com.android.build.gradle.BaseExtension::class.java)' \
               '            ?.compileSdkVersion(36)' \
               '    }' \
+              '    // Newer Flutter templates already force subprojects to evaluate' \
+              '    // earlier in this same file (evaluationDependsOn(":app")), so by' \
+              '    // the time this block runs they may already be evaluated —' \
+              '    // calling afterEvaluate on an evaluated project throws. Apply' \
+              '    // immediately in that case instead.' \
+              '    if (state.executed) applyCompileSdk36() else afterEvaluate { applyCompileSdk36() }' \
               '}' \
               >> "$ROOT_FILE"
           else
@@ -80,11 +86,16 @@ jobs:
             printf '%s\n' \
               '' \
               '// >>> CI: force compileSdk 36 on every plugin module' \
-              'subprojects {' \
-              '    afterEvaluate { proj ->' \
+              'subprojects { proj ->' \
+              '    def applyCompileSdk36 = {' \
               '        if (proj.hasProperty("android")) {' \
               '            proj.android.compileSdkVersion 36' \
               '        }' \
+              '    }' \
+              '    if (proj.state.executed) {' \
+              '        applyCompileSdk36()' \
+              '    } else {' \
+              '        proj.afterEvaluate { applyCompileSdk36() }' \
               '    }' \
               '}' \
               >> "$ROOT_FILE"
