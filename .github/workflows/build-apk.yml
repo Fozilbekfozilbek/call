@@ -46,6 +46,9 @@ jobs:
           fi
           cp android_manifest_template/AndroidManifest.xml android/app/src/main/AndroidManifest.xml
 
+      - name: Install packages
+        run: flutter pub get
+
       - name: Patch compileSdk to 36 (app module)
         run: |
           FILE="android/app/build.gradle.kts"
@@ -55,54 +58,24 @@ jobs:
             -e 's/^\(\s*compileSdkVersion\s\+\).*$/\136/' \
             "$FILE"
 
-      # Plugins (file_picker -> flutter_plugin_android_lifecycle, etc.) are
-      # separate Gradle subprojects that set their OWN compileSdk via the
-      # "flutter.compileSdkVersion" variable — patching the app module above
-      # does not touch them, so the release build can still fail with
-      # ":file_picker is currently compiled against android-34" even though
-      # the app itself is already on 36. Force every subproject to 36 too.
-      - name: Patch compileSdk to 36 (every plugin module)
+      # Some plugins (e.g. file_picker) ship their OWN build.gradle with a
+      # hardcoded compileSdk that can be lower than what the app needs.
+      # Patching the root project's build.gradle.kts to force this at
+      # configuration time doesn't work on modern AGP — it refuses to
+      # change compileSdk after it has already been read ("It is too late
+      # to set compileSdk"). Instead, patch every plugin's build.gradle
+      # file directly, on disk, in the pub cache, BEFORE Gradle ever reads
+      # it — after `flutter pub get` has just downloaded them.
+      - name: Patch compileSdk to 36 (cached plugin packages)
         run: |
-          ROOT_FILE="android/build.gradle.kts"
-          if [ -f "$ROOT_FILE" ]; then
-            printf '%s\n' \
-              '' \
-              '// >>> CI: force compileSdk 36 on every plugin module' \
-              'subprojects {' \
-              '    val applyCompileSdk36: () -> Unit = {' \
-              '        extensions.findByType(com.android.build.gradle.BaseExtension::class.java)' \
-              '            ?.compileSdkVersion(36)' \
-              '    }' \
-              '    // Newer Flutter templates already force subprojects to evaluate' \
-              '    // earlier in this same file (evaluationDependsOn(":app")), so by' \
-              '    // the time this block runs they may already be evaluated —' \
-              '    // calling afterEvaluate on an evaluated project throws. Apply' \
-              '    // immediately in that case instead.' \
-              '    if (state.executed) applyCompileSdk36() else afterEvaluate { applyCompileSdk36() }' \
-              '}' \
-              >> "$ROOT_FILE"
-          else
-            ROOT_FILE="android/build.gradle"
-            printf '%s\n' \
-              '' \
-              '// >>> CI: force compileSdk 36 on every plugin module' \
-              'subprojects { proj ->' \
-              '    def applyCompileSdk36 = {' \
-              '        if (proj.hasProperty("android")) {' \
-              '            proj.android.compileSdkVersion 36' \
-              '        }' \
-              '    }' \
-              '    if (proj.state.executed) {' \
-              '        applyCompileSdk36()' \
-              '    } else {' \
-              '        proj.afterEvaluate { applyCompileSdk36() }' \
-              '    }' \
-              '}' \
-              >> "$ROOT_FILE"
-          fi
-
-      - name: Install packages
-        run: flutter pub get
+          PUB_CACHE_DIR="${PUB_CACHE:-$HOME/.pub-cache}"
+          echo "Scanning $PUB_CACHE_DIR for plugin build.gradle files..."
+          find "$PUB_CACHE_DIR" -path "*/android/build.gradle*" -print 2>/dev/null | while IFS= read -r f; do
+            sed -i -E \
+              -e 's/(compileSdk[[:space:]]*=[[:space:]]*)[0-9]+/\136/' \
+              -e 's/(compileSdkVersion[[:space:]]*\(?[[:space:]]*)[0-9]+/\136/' \
+              "$f"
+          done
 
       - name: Build release APK
         run: flutter build apk --release
