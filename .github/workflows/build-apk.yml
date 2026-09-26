@@ -1,0 +1,104 @@
+name: Build Android APK
+
+# Runs automatically on every push to main, and can also be triggered
+# manually from the Actions tab ("Run workflow" button).
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: flutter_app
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.35.x'
+          channel: 'stable'
+
+      # Our zip ships only lib/ + pubspec.yaml + a manifest template —
+      # the android/ platform folder is generated here, same as setup.bat
+      # does locally.
+      - name: Generate platform files (if not already present)
+        run: |
+          if [ ! -d "android/app" ]; then
+            cp pubspec.yaml pubspec.yaml.bak
+            cp -r lib lib_backup
+            flutter create --org com.sofmebel --project-name call_tracking_app .
+            cp pubspec.yaml.bak pubspec.yaml
+            rm -rf lib
+            cp -r lib_backup lib
+            rm -rf lib_backup pubspec.yaml.bak
+          fi
+          cp android_manifest_template/AndroidManifest.xml android/app/src/main/AndroidManifest.xml
+
+      - name: Patch compileSdk to 36 (app module)
+        run: |
+          FILE="android/app/build.gradle.kts"
+          [ -f "$FILE" ] || FILE="android/app/build.gradle"
+          sed -i \
+            -e 's/^\(\s*compileSdk\s*=\s*\).*$/\136/' \
+            -e 's/^\(\s*compileSdkVersion\s\+\).*$/\136/' \
+            "$FILE"
+
+      # Plugins (file_picker -> flutter_plugin_android_lifecycle, etc.) are
+      # separate Gradle subprojects that set their OWN compileSdk via the
+      # "flutter.compileSdkVersion" variable — patching the app module above
+      # does not touch them, so the release build can still fail with
+      # ":file_picker is currently compiled against android-34" even though
+      # the app itself is already on 36. Force every subproject to 36 too.
+      - name: Patch compileSdk to 36 (every plugin module)
+        run: |
+          ROOT_FILE="android/build.gradle.kts"
+          if [ -f "$ROOT_FILE" ]; then
+            printf '%s\n' \
+              '' \
+              '// >>> CI: force compileSdk 36 on every plugin module' \
+              'subprojects {' \
+              '    afterEvaluate {' \
+              '        extensions.findByType(com.android.build.gradle.BaseExtension::class.java)' \
+              '            ?.compileSdkVersion(36)' \
+              '    }' \
+              '}' \
+              >> "$ROOT_FILE"
+          else
+            ROOT_FILE="android/build.gradle"
+            printf '%s\n' \
+              '' \
+              '// >>> CI: force compileSdk 36 on every plugin module' \
+              'subprojects {' \
+              '    afterEvaluate { proj ->' \
+              '        if (proj.hasProperty("android")) {' \
+              '            proj.android.compileSdkVersion 36' \
+              '        }' \
+              '    }' \
+              '}' \
+              >> "$ROOT_FILE"
+          fi
+
+      - name: Install packages
+        run: flutter pub get
+
+      - name: Build release APK
+        run: flutter build apk --release
+
+      - name: Upload APK as build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: call-tracking-app-release
+          path: flutter_app/build/app/outputs/flutter-apk/app-release.apk
+          retention-days: 30
